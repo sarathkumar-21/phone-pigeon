@@ -1,0 +1,10 @@
+# Terminates TLS (automatic HTTPS) and load-balances WebSockets across relay replicas.
+{$RELAY_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy relay:8080 {
+		lb_policy least_conn
+		health_uri /healthz
+	}
+	@metrics path /metrics
+	respond @metrics 404   # keep Prometheus internal; scrape relay:8080/metrics directly
+}
