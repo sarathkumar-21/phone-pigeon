@@ -160,7 +160,7 @@ Read the full [threat model and review](docs/security-review.md). To report a vu
 ## Developing
 
 - **Mac:** after changing `macos/project.yml` run `xcodegen generate`. Ad-hoc-signed debug builds change signature on every build, so macOS may ask for Keychain access again; set `DEVELOPMENT_TEAM` in `macos/project.yml` for a stable signature.
-- **Android:** debug builds allow `ws://` for a relay on your LAN. Release builds are signed with your own key if you create `android/keystore.properties` (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`); otherwise they fall back to the debug key, which is fine for local use only.
+- **Android:** debug builds allow `ws://` for a relay on your LAN. Release builds are signed with your own key if you create `android/keystore.properties` (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`); otherwise they fall back to the debug key, which is fine for local use only. To make a key: `keytool -genkeypair -keystore ~/.phonepigeon/release.jks -storetype PKCS12 -alias phonepigeon -keyalg RSA -keysize 4096 -validity 10000`. Keep it and its passwords backed up and out of the repo: an app can only be updated in place by an APK signed with the same key.
 - **Emulator testing:** the emulator cannot be found by Bonjour from the Mac. Run `adb forward tcp:8444 tcp:8444` and start the Mac app with `PHONEPIGEON_MEDIA_HOST_OVERRIDE=127.0.0.1` in its environment so it reaches the emulator's media server.
 - **Relay settings** are environment variables; see `backend/.env.example` and `backend/internal/config`. `JWT_SECRET` must be at least 32 bytes (set `ALLOW_INSECURE_DEV=1` to override for local development only).
 
