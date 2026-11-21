@@ -37,3 +37,4 @@ backend/secrets/
 
 # release artifacts
 dist/
+macos/build-release/
