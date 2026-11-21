@@ -64,7 +64,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-service:2.9.4")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.13.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.crypto.tink:tink-android:1.18.0")
 
