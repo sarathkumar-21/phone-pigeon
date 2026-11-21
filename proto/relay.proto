@@ -1,0 +1,281 @@
+syntax = "proto3";
+package phonepigeon.v1;
+
+option go_package = "github.com/sarathkumar-21/phone-pigeon/backend/gen/relaypb";
+option java_package = "dev.phonepigeon.proto";
+
+// Outer unencrypted envelope routed by the Relay Server
+message EncryptedEnvelope {
+  string message_id = 1;
+  string sender_device_id = 2;
+  string target_device_id = 3;
+  bytes nonce = 4;             // 12-byte ChaCha20-Poly1305 nonce
+  bytes ciphertext = 5;        // Encrypted DevicePayload
+  int64 server_timestamp_ms = 6;
+  bool requires_wakeup = 7;    // Triggers High-Priority FCM if Android offline
+}
+
+// Inner decrypted payload (Zero-Knowledge to Server)
+message DevicePayload {
+  uint64 sequence_number = 1;
+  int64 client_timestamp_ms = 2;
+
+  oneof body {
+    AckEvent ack = 10;
+    // Telephony & SMS
+    SimInventorySync sim_inventory = 11;
+    SmsThreadSync sms_thread_sync = 12;
+    SmsMessageEvent sms_message = 13;
+    SendSmsCommand send_sms = 14;
+    SmsStatusUpdate sms_status = 15;
+    CallStateEvent call_state = 16;
+    PlaceCallCommand place_call = 17;
+    CallActionCommand call_action = 18;
+    ContactSyncBatch contact_sync = 19;
+    DeviceStatusEvent device_status = 20;
+    // Files, Gallery & Media Transport
+    MediaServerEndpoint media_endpoint = 30;
+    ListDirectoryRequest list_dir_req = 31;
+    ListDirectoryResponse list_dir_res = 32;
+    ListMediaGalleryRequest list_gallery_req = 33;
+    ListMediaGalleryResponse list_gallery_res = 34;
+    FileOperationRequest file_op_req = 35;
+    FileOperationResponse file_op_res = 36;
+    WebRtcSignal webrtc_signal = 37;
+  }
+}
+
+message AckEvent { string acked_message_id = 1; }
+
+// --- MULTI-SIM & SMS ---
+message SimCard {
+  int32 subscription_id = 1;
+  int32 slot_index = 2;        // 0 = SIM 1, 1 = SIM 2
+  string carrier_name = 3;
+  string display_name = 4;
+  string phone_number = 5;
+  string accent_color_hex = 6;
+  bool is_default_sms = 7;
+  bool is_default_voice = 8;
+}
+
+message SimInventorySync { repeated SimCard sims = 1; }
+
+enum MessageDirection { DIRECTION_UNSPECIFIED = 0; INCOMING = 1; OUTGOING = 2; }
+enum MessageStatus { STATUS_UNSPECIFIED = 0; PENDING = 1; SENT = 2; DELIVERED = 3; FAILED = 4; }
+
+message SmsMessageEvent {
+  string local_id = 1;
+  string thread_id = 2;
+  int32 subscription_id = 3;
+  string address = 4;
+  string body = 5;
+  MessageDirection direction = 6;
+  MessageStatus status = 7;
+  int64 timestamp_ms = 8;
+  bool is_read = 9;
+}
+
+message SmsThreadSync {
+  repeated SmsMessageEvent messages = 1;
+  bool has_more = 2;
+}
+
+message SendSmsCommand {
+  string client_request_id = 1;
+  int32 subscription_id = 2;
+  string recipient_address = 3;
+  string body = 4;
+}
+
+message SmsStatusUpdate {
+  string client_request_id = 1;
+  MessageStatus status = 2;
+  string error_reason = 3;
+}
+
+// --- VOICE CALLS & AUDIO ROUTING ---
+enum CallState {
+  CALL_STATE_UNSPECIFIED = 0;
+  RINGING_INCOMING = 1;
+  DIALING_OUTGOING = 2;
+  ACTIVE = 3;
+  HOLDING = 4;
+  DISCONNECTED = 5;
+}
+
+enum AudioRoute {
+  AUDIO_ROUTE_UNSPECIFIED = 0;
+  MAC_BLUETOOTH_HFP = 1;
+  PHONE_EARPIECE = 2;
+  PHONE_SPEAKER = 3;
+  WIRED_HEADSET = 4;
+}
+
+message CallStateEvent {
+  string call_id = 1;
+  int32 subscription_id = 2;
+  string remote_address = 3;
+  string contact_name = 4;
+  CallState state = 5;
+  AudioRoute audio_route = 6;
+  int64 started_at_ms = 7;
+  bool is_muted = 8;
+}
+
+message PlaceCallCommand {
+  string request_id = 1;
+  int32 subscription_id = 2;
+  string phone_number = 3;
+  bool route_audio_to_mac = 4;     // True by default when dialing from Mac
+}
+
+enum CallAction {
+  CALL_ACTION_UNSPECIFIED = 0;
+  ANSWER = 1;
+  REJECT = 2;
+  END_CALL = 3;
+  TOGGLE_MUTE = 4;
+  SEND_DTMF = 5;
+  SWITCH_AUDIO_ROUTE = 6;
+}
+
+message CallActionCommand {
+  string call_id = 1;
+  CallAction action = 2;
+  string dtmf_digit = 3;
+  AudioRoute target_audio_route = 4;
+}
+
+// --- CONTACTS & DEVICE STATUS ---
+message ContactEntry {
+  string contact_id = 1;
+  string display_name = 2;
+  repeated string phone_numbers = 3;
+  bytes thumbnail_jpeg = 4;
+}
+
+message ContactSyncBatch {
+  repeated ContactEntry contacts = 1;
+  bool is_final_batch = 2;
+}
+
+message DeviceStatusEvent {
+  int32 battery_percent = 1;
+  bool is_charging = 2;
+  bool bluetooth_hfp_connected = 3;
+  int64 storage_free_bytes = 4;
+  int64 storage_total_bytes = 5;
+}
+
+// --- MEDIA GALLERY & FILE EXPLORER ---
+message MediaServerEndpoint {
+  string lan_ip = 1;
+  int32 https_port = 2;
+  string session_bearer_token = 3;
+  bytes server_cert_sha256 = 4;    // Pinning hash for mTLS
+}
+
+message FileEntry {
+  string path = 1;                 // Relative to storage root, e.g. "/DCIM/Camera/IMG_01.jpg"
+  string name = 2;
+  bool is_directory = 3;
+  int64 size_bytes = 4;
+  string mime_type = 5;
+  int64 modified_at_ms = 6;
+  int32 child_count = 7;           // Populated if is_directory == true
+}
+
+message ListDirectoryRequest {
+  string request_id = 1;
+  string path = 2;                 // "/" for root (/storage/emulated/0)
+  bool include_hidden = 3;
+}
+
+message ListDirectoryResponse {
+  string request_id = 1;
+  string path = 2;
+  repeated FileEntry entries = 3;
+  string error_message = 4;
+}
+
+enum MediaTypeFilter { MEDIA_ALL = 0; MEDIA_IMAGES = 1; MEDIA_VIDEOS = 2; }
+
+message MediaItem {
+  int64 media_store_id = 1;
+  string path = 2;
+  string display_name = 3;
+  string bucket_name = 4;          // Album name (e.g., "Camera", "Screenshots")
+  string mime_type = 5;
+  int64 size_bytes = 6;
+  int32 width = 7;
+  int32 height = 8;
+  int64 duration_ms = 9;           // > 0 for videos
+  int64 date_taken_ms = 10;
+}
+
+message ListMediaGalleryRequest {
+  string request_id = 1;
+  MediaTypeFilter filter = 2;
+  string bucket_name = 3;          // Empty = All albums
+  int32 limit = 4;                 // Default 100
+  int32 offset = 5;
+}
+
+message ListMediaGalleryResponse {
+  string request_id = 1;
+  repeated MediaItem items = 2;
+  repeated string available_buckets = 3;
+  bool has_more = 4;
+}
+
+enum FileOpType { FILE_OP_UNSPECIFIED = 0; MKDIR = 1; RENAME = 2; DELETE = 3; }
+
+message FileOperationRequest {
+  string request_id = 1;
+  FileOpType op = 2;
+  string source_path = 3;
+  string target_path = 4;          // Used for RENAME
+}
+
+message FileOperationResponse {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+// WebRTC Signaling for off-LAN P2P file/media transfer
+message WebRtcSignal {
+  string session_id = 1;
+  string signal_type = 2;          // "offer", "answer", "ice_candidate"
+  string payload_json = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Pairing handshake (addition to spec v2.0.0)
+// Sent by Android right after scanning the QR code. The public key travels in
+// clear text (it is public); the body is sealed with K_and_to_mac so macOS can
+// prove both sides derived identical keys before persisting the pairing.
+// macOS answers with an encrypted AckEvent{acked_message_id = session_id}.
+// ---------------------------------------------------------------------------
+message PairAckEnvelope {
+  string session_id = 1;
+  string android_device_id = 2;
+  bytes android_pub_key = 3;     // 32-byte X25519 public key
+  bytes nonce = 4;
+  bytes ciphertext = 5;          // Encrypted PairAckBody
+}
+
+message PairAckBody {
+  string session_id = 1;
+  string device_name = 2;        // e.g. "Pixel 9 Pro"
+  string manufacturer = 3;
+  string os_version = 4;
+  // HMAC-SHA256(pairing_secret, "phonepigeon-pair-v1" || session_id || phone_pub || mac_pub), base64.
+  // pairing_secret travels only in the QR, never through the relay, so a relay cannot forge a PairAck.
+  string proof = 5;
+}
+
+// QR payload (JSON, not protobuf): { v: 2, session_id, mac_device_id, mac_pub_key,
+// relay_url, lan_host, mac_name?, pairing_secret } — mac_name is an optional addition;
+// pairing_secret is 32 random bytes, base64, shown only in the QR / copied code.

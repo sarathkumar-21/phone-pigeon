@@ -1,0 +1,57 @@
+# Production-shaped stack: Caddy (TLS) → relay ×2 → Redis + PostgreSQL, plus coturn for WebRTC.
+# Usage: cp .env.example .env && edit, then `docker compose up -d`.
+services:
+  caddy:
+    image: caddy:2.8
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    environment: [RELAY_DOMAIN]
+    depends_on: [relay]
+
+  relay:
+    build: .
+    deploy: { replicas: 2 }          # horizontal scale: Redis Pub/Sub routes between instances
+    environment:
+      ADDR: ":8080"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (at least 32 random bytes)}
+      TRUST_PROXY: "1"                # Caddy appends the real client IP to X-Forwarded-For
+      METRICS_ADDR: ":9090"           # private listener; not published by Compose and blocked in Caddy
+      # sslmode=disable is acceptable only because Postgres lives on the private Compose network.
+      # If it moves to another host, set POSTGRES_SSLMODE=verify-full and mount the CA.
+      DATABASE_URL: postgres://phonepigeon:${POSTGRES_PASSWORD}@postgres:5432/phonepigeon?sslmode=${POSTGRES_SSLMODE:-disable}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
+      FCM_CREDENTIALS_FILE: ${FCM_CREDENTIALS_FILE:-}
+    volumes:
+      - ./secrets:/secrets:ro         # put the Firebase service-account JSON here
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: phonepigeon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: phonepigeon
+    volumes: [pg_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U phonepigeon"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes: [redis_data:/data]
+
+  coturn:
+    image: coturn/coturn:4.6
+    network_mode: host                 # TURN needs the real public IP and relay port range
+    command: ["-c", "/etc/coturn/turnserver.conf", "--static-auth-secret=${TURN_SECRET:?set TURN_SECRET in .env}"]
+    volumes: [./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro]
+    restart: unless-stopped
+
+volumes: { caddy_data: {}, pg_data: {}, redis_data: {} }

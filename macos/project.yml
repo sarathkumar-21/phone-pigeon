@@ -1,0 +1,59 @@
+name: PhonePigeon
+options:
+  bundleIdPrefix: dev.phonepigeon
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  PhonePigeon:
+    type: application
+    platform: macOS
+    sources:
+      - path: PhonePigeon
+    info:
+      path: PhonePigeon/Info.plist
+      properties:
+        CFBundleDisplayName: PhonePigeon
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSApplicationCategoryType: public.app-category.productivity
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: "PhonePigeon"
+        NSBluetoothAlwaysUsageDescription: PhonePigeon uses Bluetooth Hands-Free to route phone call audio to your Mac.
+        NSMicrophoneUsageDescription: PhonePigeon uses the microphone to carry your voice during phone calls.
+        NSLocalNetworkUsageDescription: PhonePigeon discovers your paired Android phone on the local network for low-latency sync.
+        NSBonjourServices:
+          - _pigeonmac._tcp
+          - _pigeonphone._tcp
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: PhonePigeon/PhonePigeon.entitlements
+      properties:
+        com.apple.security.network.client: true
+        com.apple.security.network.server: true
+        com.apple.security.device.bluetooth: true
+        com.apple.security.device.audio-input: true
+        # App Sandbox: the app only reaches the network, Bluetooth/mic, Downloads, Music (call recordings)
+        # and files the user picks or drops. A compromised phone can no longer write anywhere else on the Mac.
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.downloads.read-write: true
+        com.apple.security.files.user-selected.read-write: true
+        com.apple.security.assets.music.read-write: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.phonepigeon.mac
+        PRODUCT_NAME: PhonePigeon
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        COMBINE_HIDPI_IMAGES: YES
