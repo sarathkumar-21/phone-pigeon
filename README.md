@@ -12,7 +12,30 @@ PhonePigeon pairs a multi-SIM Android phone with a Mac, over your own Wi-Fi (or 
 - **Screen mirroring:** see the phone's screen on the Mac and, if you opt in, control it with the mouse and keyboard.
 - **Many phones:** pair as many phones as you like and switch between them.
 
+![PhonePigeon walkthrough](docs/images/demo.gif)
+
+*Walkthrough of the Mac app, [as a video (MP4)](docs/demo.mp4). Screens show the built-in Demo Phone, so the contacts and messages are made up.*
+
 > **Status: early.** It works end to end on an Android 15 emulator and on a few real phones, but it has had little testing on real hardware. See [What is tested](#what-is-tested) and [Known limitations](#known-limitations) before relying on it.
+
+## Screenshots
+
+| | |
+| --- | --- |
+| ![Overview](docs/images/mac-overview.png) | ![Messages](docs/images/mac-messages.png) |
+| Overview: phone, battery, SIMs, verification code | Messages with the SIM used for each reply |
+| ![Calls and dialer](docs/images/mac-calls.png) | ![Photos](docs/images/mac-photos.png) |
+| Calls and dialer | Photos and videos, by album |
+| ![Files](docs/images/mac-files.png) | ![Welcome](docs/images/mac-welcome.png) |
+| Files, with whole-phone search | First launch |
+
+The Android app:
+
+<p>
+<img src="docs/images/android-welcome.png" width="220" alt="Android welcome screen">
+<img src="docs/images/android-permissions.png" width="220" alt="Android permissions screen">
+<img src="docs/images/android-pair.png" width="220" alt="Android nearby pairing screen">
+</p>
 
 ## How it fits together
 
