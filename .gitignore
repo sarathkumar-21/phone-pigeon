@@ -34,3 +34,6 @@ backend/secrets/
 *.sealed
 *.sealed.bak
 *.log
+
+# release artifacts
+dist/
