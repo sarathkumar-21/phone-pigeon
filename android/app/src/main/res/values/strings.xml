@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">PhonePigeon</string>
+    <string name="remote_control_description">Lets your paired Mac tap, swipe and type on this phone, only while screen mirroring is running and you have turned on Remote control in PhonePigeon.</string>
+</resources>
