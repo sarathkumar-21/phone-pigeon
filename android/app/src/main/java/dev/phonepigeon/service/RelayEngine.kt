@@ -547,7 +547,9 @@ class RelayEngine private constructor(private val app: Context) {
     // Reading SIMs and hashing the fingerprints is not free and refreshState() runs on every link or counter change.
     @Volatile private var simCache: List<SimCard>? = null
     private fun cachedSims(): List<SimCard> = simCache ?: runCatching { SimInventory.read(app) }.getOrDefault(emptyList()).also { simCache = it }
-    private val myFp by lazy { runCatching { Crypto.fingerprint(store.publicKey) }.getOrDefault("") }
+    // (Not `by lazy`: refreshState() first runs from init{}, above these declarations, where a delegate would still be null.)
+    private var myFpCache: String? = null
+    private fun myFp(): String = myFpCache ?: runCatching { Crypto.fingerprint(store.publicKey) }.getOrDefault("").also { myFpCache = it }
     private var macFpKey: String? = null
     private var macFpValue = ""
     private fun macFp(p: Pairing): String {
@@ -572,7 +574,7 @@ class RelayEngine private constructor(private val app: Context) {
                 lanHost = lan?.connectedHost ?: p?.lanHost,
                 sims = cachedSims(),
                 relayed = store.relayedCount,
-                myFingerprint = myFp,
+                myFingerprint = myFp(),
                 macFingerprint = p?.let { macFp(it) }.orEmpty(),
                 pairedAt = p?.pairedAt ?: 0,
                 shareSms = store.shareSms,
