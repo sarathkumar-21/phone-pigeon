@@ -22,7 +22,7 @@ type Config struct {
 	OfflineCap         int64         // spec §10.2: 500 messages
 	RatePerMinute      int           // spec §10.3: 60 envelopes/min
 	RateBurst          int           // spec §10.3: burst 20
-	PingInterval       time.Duration // spec §10.3: 25s
+	PingInterval       time.Duration // 55s: every ping wakes a phone's radio, and mobile NATs hold idle sockets for minutes
 	PongTimeout        time.Duration // spec §10.3: 10s
 	MetricsAddr        string        // separate listener for /metrics; empty = metrics disabled
 	TrustProxy         bool          // read the client IP from the last X-Forwarded-For hop (set behind Caddy)
@@ -44,7 +44,7 @@ func Load() Config {
 		OfflineCap:         int64(integer("OFFLINE_CAP", 500)),
 		RatePerMinute:      integer("RATE_PER_MINUTE", 60),
 		RateBurst:          integer("RATE_BURST", 20),
-		PingInterval:       duration("PING_INTERVAL", 25*time.Second),
+		PingInterval:       duration("PING_INTERVAL", 55*time.Second),
 		PongTimeout:        duration("PONG_TIMEOUT", 10*time.Second),
 	}
 	insecureDev := os.Getenv("ALLOW_INSECURE_DEV") == "1"

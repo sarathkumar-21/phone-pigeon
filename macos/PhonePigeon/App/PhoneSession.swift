@@ -128,8 +128,9 @@ final class PhoneSession: Identifiable {
         rekeyTask = Task { [weak self] in
             var elapsed = 0
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(20))
-                elapsed += 20
+                // A minute, with slack so the system can batch this wake-up with others (an idle Mac app should wake rarely).
+                try? await Task.sleep(for: .seconds(60), tolerance: .seconds(15))
+                elapsed += 60
                 if elapsed >= 6 * 3600 { elapsed = 0; self?.channel?.scheduleRekey() }
                 // A request can be lost (peer still starting up): retry while the link is up and no exchange has finished.
                 if let self, self.host?.linkConnected(for: self) == true { self.maybeRekey() }

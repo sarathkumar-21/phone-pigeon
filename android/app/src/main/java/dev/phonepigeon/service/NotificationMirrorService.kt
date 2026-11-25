@@ -54,6 +54,8 @@ class NotificationMirrorService : NotificationListenerService() {
     }
 
     private val iconsSent = ConcurrentHashMap.newKeySet<String>()
+    /** App labels do not change while the service runs; looking one up costs a PackageManager round trip per notification. */
+    private val appNames = ConcurrentHashMap<String, String>()
     private val engine by lazy { RelayEngine.get(this) }
 
     override fun onListenerConnected() {
@@ -100,7 +102,7 @@ class NotificationMirrorService : NotificationListenerService() {
         val text = bestText(n, extras)
         if (title.isBlank() && text.isBlank()) { Log.d("PhonePigeon", "notification from $pkg has no text, skipped"); return }
 
-        val appName = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
+        val appName = appNames.getOrPut(pkg) { runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg) }
         val icon = if (iconsSent.add(pkg)) appIcon(pkg) else ""
         engine.sendFromService(PayloadBody(notification = NotificationEvent(
             key = sbn.key, packageName = pkg, appName = appName, title = title, text = text.take(2000),

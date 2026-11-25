@@ -192,7 +192,9 @@ struct PairingStep: View {
 
 struct AnimatedBackdrop: View {
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
+        // Soft colour blobs drawn as radial gradients (no full-screen blur filter) and moved at 12 frames a second:
+        // the old 30 fps blur kept the GPU busy for as long as the welcome screen was open.
+        TimelineView(.animation(minimumInterval: 1 / 12)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             Canvas { gc, size in
                 let blobs: [(Color, Double, Double, Double)] = [
@@ -204,11 +206,13 @@ struct AnimatedBackdrop: View {
                 for (i, b) in blobs.enumerated() {
                     let x = size.width * (b.1 + 0.08 * sin(t * b.3 + Double(i)))
                     let y = size.height * (b.2 + 0.08 * cos(t * b.3 * 1.3 + Double(i)))
-                    let r = max(size.width, size.height) * 0.38
-                    gc.fill(Path(ellipseIn: CGRect(x: x - r / 2, y: y - r / 2, width: r, height: r)), with: .color(b.0.opacity(0.22)))
+                    let r = max(size.width, size.height) * 0.45
+                    let rect = CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)
+                    gc.fill(Path(ellipseIn: rect),
+                            with: .radialGradient(Gradient(colors: [b.0.opacity(0.30), b.0.opacity(0)]),
+                                                  center: CGPoint(x: x, y: y), startRadius: 0, endRadius: r))
                 }
             }
-            .blur(radius: 90)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea()

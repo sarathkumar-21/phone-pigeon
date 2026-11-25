@@ -402,10 +402,28 @@ export function schedule(item: Omit<ScheduledItem, "id" | "status">): string | n
   if (d.scheduled.filter((s) => s.status === "pending").length >= ScheduleLimits.maxPending) return "Too many scheduled items.";
   d.scheduled.push({ ...item, id: uuid(), status: "pending", address: normalizeNumber(item.address) });
   touch(phone);
+  armScheduler();
   return null;
 }
 
-/** Runs once a second: fires due items for connected phones; one text per pass so a backlog never floods the phone. */
+let schedTimer: number | undefined;
+
+/** How long until the scheduler needs to look again: every second near a due item, every 5 s otherwise (items are at least 10 s ahead). */
+function nextSchedulerDelay(): number {
+  let next = Infinity;
+  for (const p of state.phones) for (const s of state.data[p.id]?.scheduled ?? []) if (s.status === "pending") next = Math.min(next, s.fireAt);
+  const gap = next - Date.now();
+  if (gap <= 2000) return 1000;
+  return Math.max(1000, Math.min(5000, gap - 1000));
+}
+
+/** Re-arms the scheduler's one-shot timer; also called when an item is added so it never sleeps through it. */
+function armScheduler() {
+  if (schedTimer !== undefined) clearTimeout(schedTimer);
+  schedTimer = window.setTimeout(() => { runScheduler(); armScheduler(); }, nextSchedulerDelay());
+}
+
+/** Fires due items for connected phones; one text per pass so a backlog never floods the phone. */
 function runScheduler() {
   const now = Date.now();
   for (const p of state.phones) {
@@ -472,8 +490,9 @@ export async function init() {
   await on<string>("paired", async (id) => { await loadSnapshot(id); state.selected = id; state.addingPhone = false; state.section = "overview"; notify(); toast("Paired", "success"); });
   await on<TransferEvent>("transfer", (t) => { state.transfers[t.id] = t; notify(); });
   state.nearbyList = await api.nearbyPhones();
-  setInterval(runScheduler, 1000);
-  setInterval(() => notify(), 30_000); // relative times and countdowns
+  armScheduler();
+  // Relative times and countdowns: refresh once a minute, and only while the window is visible (a hidden window has nobody to read them).
+  setInterval(() => { if (document.visibilityState === "visible") notify(); }, 60_000);
 }
 
 export const hasPhones = () => state.phones.length > 0;

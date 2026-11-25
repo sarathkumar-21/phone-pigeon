@@ -207,7 +207,7 @@ class RelayEngine private constructor(private val app: Context) {
 
     private fun buildRelay(p: Pairing, pairingSession: String? = null): RelayClient {
         relay?.stop()
-        return RelayClient(p.relayUrl, store.deviceId, store.privateKey, pairingSession).also { r ->
+        return RelayClient(p.relayUrl, store.deviceId, store.privateKey, pairingSession, dev.phonepigeon.network.NetworkWatch(app)).also { r ->
             r.onFrame = ::onFrame
             r.onState = { s -> if (s == LinkState.CONNECTED) channel?.resetEphemeral(); onLinkChanged() }
             relay = r
@@ -234,17 +234,21 @@ class RelayEngine private constructor(private val app: Context) {
             canMirror = { store.allowScreen })
 
         if (lan == null) buildLan(p).start() else lan?.start()
-        if (relayConfigured(p.relayUrl)) buildRelay(p).start()
+        // The cloud link is only a fallback: it is opened when the Mac cannot be reached on the local network, and closed again
+        // when it can, so two connections (and two sets of keep-alives) are never held at once.
+        if (relayConfigured(p.relayUrl)) { buildRelay(p); manageRelay() }
 
         // Wi-Fi-only tablets have no telephony stack: each of these may fail without taking the app down.
         calls = runCatching { CallController(app) { ev -> onCallEvent(ev) }.also { it.start() } }.onFailure { Log.w("PhonePigeon", "calls unavailable: ${it.message}") }.getOrNull()
         runCatching { SmsRepository.observe(app) { m -> onLocalSms(m) } }.onFailure { Log.w("PhonePigeon", "SMS unavailable: ${it.message}") }
-        runCatching { SimInventory.listen(app) { if (store.pairing != null) send(PayloadBody(simInventory = SimInventorySync(SimInventory.read(app)))) } }
+        runCatching { SimInventory.listen(app) { simCache = null; if (store.pairing != null) { send(PayloadBody(simInventory = SimInventorySync(cachedSims()))); refreshState() } } }
 
         heartbeat = scope.launch {
             while (isActive) {
-                delay(120_000)
-                send(PayloadBody(deviceStatus = DeviceStatusReader.read(app)), queueIfOffline = false)
+                delay(300_000)
+                // Nothing to tell a Mac that is not there; the status goes out on every reconnect anyway.
+                if (lan?.state == LinkState.CONNECTED || relay?.state == LinkState.CONNECTED)
+                    send(PayloadBody(deviceStatus = DeviceStatusReader.read(app)), queueIfOffline = false)
             }
         }
         if (store.relayedCount == 0) fullSync()
@@ -255,6 +259,7 @@ class RelayEngine private constructor(private val app: Context) {
     fun stop() {
         running = false
         heartbeat?.cancel()
+        relayGate?.cancel(); relayGate = null
         lan?.stop(); relay?.stop(); calls?.stop(); mediaServer?.stop()
         mediaServer = null
         lan = null; relay = null; calls = null
@@ -450,11 +455,54 @@ class RelayEngine private constructor(private val app: Context) {
             outbox.addLast(body)
             while (outbox.size > 500) outbox.removeFirst()
         }
-        ch?.let { store.outgoingSequence = it.outgoingSequence }
+        persistOutgoingSequence(ch)
     }
 
+    /**
+     * The outgoing counter only has to be ahead of what the Mac has seen, and its stored value is floored at the clock, so it
+     * is written at most every few seconds instead of after every message (each write rewrites the whole settings file).
+     */
+    private var lastSeqWrite = 0L
+    private fun persistOutgoingSequence(ch: SecureChannel?) {
+        ch ?: return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastSeqWrite < 5_000) return
+        lastSeqWrite = now
+        store.outgoingSequence = ch.outgoingSequence
+    }
+
+    // ---- cloud fallback gating
+    private var relayGate: Job? = null
+
+    @Synchronized
+    private fun manageRelay() {
+        val p = store.pairing ?: return
+        val r = relay ?: return
+        if (!running || !relayConfigured(p.relayUrl)) return
+        if (lan?.state == LinkState.CONNECTED) {
+            relayGate?.cancel(); relayGate = null
+            if (r.state != LinkState.IDLE) r.stop()
+        } else if (relayGate == null || relayGate?.isActive == false) {
+            // Grace period: the local link usually comes up within seconds of launch or a Wi-Fi blip.
+            relayGate = scope.launch {
+                delay(15_000)
+                if (lan?.state != LinkState.CONNECTED) r.start()
+            }
+        }
+    }
+
+    private var lastCallLogSync = -1_000_000L
+    private var lanWasUp = false
+    private var relayWasUp = false
+
     private fun onLinkChanged() {
-        if (lan?.state == LinkState.CONNECTED || relay?.state == LinkState.CONNECTED) {
+        val lanUp = lan?.state == LinkState.CONNECTED
+        val relayUp = relay?.state == LinkState.CONNECTED
+        // Catch the Mac up once per link that comes up, not on every blip of either link.
+        val newlyUp = (lanUp && !lanWasUp) || (relayUp && !relayWasUp && !lanUp)
+        lanWasUp = lanUp; relayWasUp = relayUp
+        manageRelay()
+        if (newlyUp) {
             NotificationMirrorService.ensureBound(app)
             NotificationMirrorService.resync()
             val queued = synchronized(outbox) { outbox.toList().also { outbox.clear() } }
@@ -463,7 +511,10 @@ class RelayEngine private constructor(private val app: Context) {
                 mediaServer?.start()?.let { send(PayloadBody(mediaEndpoint = it), queueIfOffline = false) }
                 send(PayloadBody(simInventory = SimInventorySync(SimInventory.read(app))), queueIfOffline = false)
                 send(PayloadBody(deviceStatus = DeviceStatusReader.read(app)), queueIfOffline = false)
-                sendCallLog(100)   // every reconnect: calls made on the phone itself while the Mac was away
+                // Calls made on the phone itself while the Mac was away. Reading the log is slow on some phones, so a Wi-Fi
+                // blip that reconnects within two minutes does not read it again.
+                val t = android.os.SystemClock.elapsedRealtime()
+                if (t - lastCallLogSync > 120_000) { lastCallLogSync = t; sendCallLog(100) }
                 queued.forEach { send(it) }
             }
         }
@@ -493,6 +544,17 @@ class RelayEngine private constructor(private val app: Context) {
         _state.update { it.copy(activity = (listOf(Activity(kind, text)) + it.activity).take(40)) }
     }
 
+    // Reading SIMs and hashing the fingerprints is not free and refreshState() runs on every link or counter change.
+    @Volatile private var simCache: List<SimCard>? = null
+    private fun cachedSims(): List<SimCard> = simCache ?: runCatching { SimInventory.read(app) }.getOrDefault(emptyList()).also { simCache = it }
+    private val myFp by lazy { runCatching { Crypto.fingerprint(store.publicKey) }.getOrDefault("") }
+    private var macFpKey: String? = null
+    private var macFpValue = ""
+    private fun macFp(p: Pairing): String {
+        if (macFpKey != p.sessionId) { macFpValue = runCatching { Crypto.fingerprint(p.macPublicKey) }.getOrDefault(""); macFpKey = p.sessionId }
+        return macFpValue
+    }
+
     fun refreshState() {
         val p = store.pairing
         val connection = when {
@@ -508,10 +570,10 @@ class RelayEngine private constructor(private val app: Context) {
                 macName = p?.macName.orEmpty(),
                 connection = connection,
                 lanHost = lan?.connectedHost ?: p?.lanHost,
-                sims = runCatching { SimInventory.read(app) }.getOrDefault(emptyList()),
+                sims = cachedSims(),
                 relayed = store.relayedCount,
-                myFingerprint = runCatching { Crypto.fingerprint(store.publicKey) }.getOrDefault(""),
-                macFingerprint = p?.let { Crypto.fingerprint(it.macPublicKey) }.orEmpty(),
+                myFingerprint = myFp,
+                macFingerprint = p?.let { macFp(it) }.orEmpty(),
                 pairedAt = p?.pairedAt ?: 0,
                 shareSms = store.shareSms,
                 shareCalls = store.shareCalls,

@@ -2,6 +2,7 @@ package dev.phonepigeon.ui
 
 import android.text.format.DateUtils
 import dev.phonepigeon.telephony.has
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.expandVertically
@@ -337,7 +338,14 @@ private fun ActivityRow(a: Activity) {
         ActivityKind.ERROR -> Icons.Rounded.ErrorOutline to Color(0xFFEF4444)
     }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) { while (true) { delay(30_000); now = System.currentTimeMillis() } }
+    // Re-render the "x min ago" labels once a minute, and only while the screen is actually showing.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            now = System.currentTimeMillis()
+            while (true) { delay(60_000); now = System.currentTimeMillis() }
+        }
+    }
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(32.dp).clip(CircleShape).background(tint.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
             Icon(icon, null, tint = tint, modifier = Modifier.size(17.dp))

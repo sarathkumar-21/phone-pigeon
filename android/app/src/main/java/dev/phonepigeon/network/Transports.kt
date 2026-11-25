@@ -1,6 +1,9 @@
 package dev.phonepigeon.network
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -11,6 +14,7 @@ import dev.phonepigeon.proto.WireFrame
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -49,6 +53,45 @@ private fun encode(frame: WireFrame) = WireCodec.json.encodeToString(WireFrame.s
 private fun decode(bytes: ByteArray) = runCatching { WireCodec.json.decodeFromString(WireFrame.serializer(), bytes.decodeToString()) }.getOrNull()
 
 /**
+ * Tells the transports when the phone has a network at all, and wakes them when it changes. Without it a phone that is
+ * out of Wi-Fi range (or in airplane mode) would keep trying to reach the Mac every few seconds all day, which keeps the
+ * radio busy and drains the battery. With it the retry loops sleep until Android reports a network.
+ */
+class NetworkWatch(context: Context) {
+    private val cm = context.applicationContext.getSystemService(ConnectivityManager::class.java)
+    @Volatile var online = true
+        private set
+    /** True while the default network is Wi-Fi, Ethernet or a VPN, where a Mac on the same network can be reached. */
+    @Volatile var local = true
+        private set
+    /** One pending "something changed" token; the retry loops wait on it instead of polling. */
+    val changes = Channel<Unit>(Channel.CONFLATED)
+    private var registered = false
+
+    private val callback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) { online = true; changes.trySend(Unit) }
+        override fun onLost(network: Network) { online = cm?.activeNetwork != null; if (online) changes.trySend(Unit) }
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            val l = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            if (l != local) { local = l; changes.trySend(Unit) }
+        }
+    }
+
+    @Synchronized fun start() {
+        if (registered || cm == null) return
+        online = cm.activeNetwork != null
+        runCatching { cm.registerDefaultNetworkCallback(callback); registered = true }
+    }
+
+    @Synchronized fun stop() {
+        if (!registered) return
+        runCatching { cm?.unregisterNetworkCallback(callback) }
+        registered = false
+    }
+}
+
+/**
  * Local-network transport (spec §2, priority 1). The Mac listens and advertises
  * `_pigeonmac._tcp` with a hashed `h` TXT tag; the phone discovers it via NSD
  * (falling back to the `lan_host` from the QR code) and keeps a TCP link open.
@@ -72,15 +115,16 @@ class LanClient(
     private var job: Job? = null
     @Volatile private var out: DataOutputStream? = null
     @Volatile private var socket: Socket? = null
-    private var multicastLock: WifiManager.MulticastLock? = null
+    private val network = NetworkWatch(context)
 
     override fun start() {
         if (job?.isActive == true) return
-        multicastLock = context.getSystemService(WifiManager::class.java)
-            ?.createMulticastLock("phonepigeon-nsd")?.apply { setReferenceCounted(false); acquire() }
+        network.start()
         job = scope.launch {
             var failures = 0
             while (isActive) {
+                // No network at all: sleep until Android reports one instead of retrying into the void.
+                if (!network.online) { state = LinkState.IDLE; network.changes.receive(); failures = 0; continue }
                 state = LinkState.CONNECTING
                 // Known address first (instant). Bonjour only after it failed twice, e.g. the Mac got a new IP.
                 val known = fallbackHost
@@ -92,9 +136,10 @@ class LanClient(
                 failures = if (reached) 0 else failures + 1
                 state = LinkState.IDLE
                 connectedHost = null
-                // A link that was up (the Mac restarted, Wi-Fi blipped) retries after one second; a Mac that is
-                // simply absent is retried every few seconds, never backing off to half a minute.
-                delay(if (reached) 1000L else (1500L * failures).coerceAtMost(5000L))
+                // A link that was up retries after one second. A Mac that is absent is retried with growing pauses
+                // (1.5 s up to 1 minute; 2 minutes off Wi-Fi), and at once when the network changes.
+                val pause = if (reached) 1000L else (1500L shl (failures - 1).coerceIn(0, 6)).coerceAtMost(if (network.local) 60_000L else 120_000L)
+                withTimeoutOrNull(pause) { network.changes.receive(); failures = 0 }
             }
         }
     }
@@ -111,7 +156,7 @@ class LanClient(
     override fun stop() {
         job?.cancel()
         runCatching { socket?.close() }
-        multicastLock?.release()
+        network.stop()
         state = LinkState.IDLE
     }
 
@@ -154,8 +199,9 @@ class LanClient(
         s.keepAlive = true
         s.connect(InetSocketAddress(h, p), 3000)
         // A Mac that quit, slept or changed network leaves a half-open socket that Android would keep for hours.
-        // Ping every 15 s (a zero-length frame); the Mac echoes it, so 40 s of silence means the link is dead.
-        s.soTimeout = 40_000
+        // Ping every 30 s (a zero-length frame); the Mac echoes it, so 80 s of silence means the link is dead.
+        // (Fewer, later pings let the Wi-Fi radio sleep longer than the old 15 s.)
+        s.soTimeout = 80_000
         socket = s
         val o = DataOutputStream(s.getOutputStream())
         out = o
@@ -164,7 +210,7 @@ class LanClient(
         state = LinkState.CONNECTED
         val pinger = scope.launch {
             while (isActive) {
-                delay(15_000)
+                delay(30_000)
                 writer.execute { runCatching { synchronized(o) { o.writeInt(0); o.flush() } }.onFailure { runCatching { s.close() } } }
             }
         }
@@ -188,12 +234,16 @@ class LanClient(
     /** NSD discovery of the paired Mac, matched by TXT `device_id`. */
     private suspend fun discover(): String? = withTimeoutOrNull(6000) {
         val nsd = context.getSystemService(NsdManager::class.java) ?: return@withTimeoutOrNull null
+        // Multicast stays enabled only while looking: holding it all day makes Wi-Fi chips wake for every broadcast.
+        val lock = context.getSystemService(WifiManager::class.java)
+            ?.createMulticastLock("phonepigeon-nsd")?.apply { setReferenceCounted(false); runCatching { acquire() } }
         suspendCancellableCoroutine { cont ->
             var done = false
             lateinit var listener: NsdManager.DiscoveryListener
             fun finish(v: String?) {
                 if (done) return
                 done = true
+                runCatching { lock?.release() }
                 runCatching { nsd.stopServiceDiscovery(listener) }
                 if (cont.isActive) cont.resume(v)
             }
@@ -220,7 +270,7 @@ class LanClient(
                 }
             }
             runCatching { nsd.discoverServices("_pigeonmac._tcp", NsdManager.PROTOCOL_DNS_SD, listener) }.onFailure { finish(null) }
-            cont.invokeOnCancellation { runCatching { nsd.stopServiceDiscovery(listener) } }
+            cont.invokeOnCancellation { runCatching { lock?.release() }; runCatching { nsd.stopServiceDiscovery(listener) } }
         }
     }
 }
@@ -234,13 +284,14 @@ class RelayClient(
     private val deviceId: String,
     private val privateKey: ByteArray,
     private var pairingSessionId: String? = null,
+    private val network: NetworkWatch? = null,
 ) : FrameTransport {
     override var state = LinkState.IDLE
         private set(v) { if (field != v) { field = v; onState(v) } }
     override var onFrame: (WireFrame) -> Unit = {}
     override var onState: (LinkState) -> Unit = {}
 
-    private val http = OkHttpClient.Builder().pingInterval(25, TimeUnit.SECONDS).build()
+    private val http = OkHttpClient.Builder().pingInterval(55, TimeUnit.SECONDS).build()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var ws: WebSocket? = null
     private var job: Job? = null
@@ -262,15 +313,17 @@ class RelayClient(
 
     override fun start() {
         if (job?.isActive == true) return
+        network?.start()
         job = scope.launch {
             var backoff = 2000L
             while (isActive) {
+                if (network != null && !network.online) { state = LinkState.IDLE; network.changes.receive(); backoff = 2000L; continue }
                 state = LinkState.CONNECTING
                 val ok = runCatching { connect() }.onFailure { Log.d("PhonePigeon", "relay: ${it.message}") }.getOrDefault(false)
                 if (ok) backoff = 2000L
                 state = LinkState.IDLE
-                delay(backoff)
-                backoff = (backoff * 2).coerceAtMost(60_000)
+                if (network != null) withTimeoutOrNull(backoff) { network.changes.receive(); backoff = 2000L } else delay(backoff)
+                backoff = (backoff * 2).coerceAtMost(120_000)
             }
         }
     }
@@ -323,6 +376,7 @@ class RelayClient(
     override fun stop() {
         job?.cancel()
         ws?.close(1000, null)
+        network?.stop()
         state = LinkState.IDLE
     }
 
